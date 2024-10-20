@@ -42,6 +42,14 @@ class AICommentFilter_Plugin implements Typecho_Plugin_Interface
         $form->addInput($desc);
         echo '<script>window.onload = function(){document.getElementsByName("desc")[0].type = "hidden";} </script>'; 
 
+        // 新增“安全词”
+        $safeWord = new Typecho_Widget_Helper_Form_Element_Text('safe_word', null, '', _t('安全词'), _t('请输入允许绕过审核的安全词，多个词请用分号 ";" 分隔'));
+        $form->addInput($safeWord);
+    
+        // 新增“例外地址”
+        $safeUrl = new Typecho_Widget_Helper_Form_Element_Text('safe_url', null, '', _t('例外地址'), _t('请输入允许绕过审核的例外地址，多个地址请用分号 ";" 分隔；仅需填写URL末尾地址，详情请参阅使用文档'));
+        $form->addInput($safeUrl);
+
         // 选择审核服务
         $service = new Typecho_Widget_Helper_Form_Element_Radio(
             'service',
@@ -122,6 +130,25 @@ echo $script;
         // 获取插件设置
         $options = Typecho_Widget::widget('Widget_Options')->plugin('AICommentFilter');
         $service = $options->service;
+
+        // 获取当前请求的 URL
+        $currentUrl = Typecho_Request::getInstance()->getRequestUrl();
+    
+        // 获取用户配置的安全词和地址
+        $safeWords = array_map('trim', explode(';', $options->safe_word));
+        $safeUrls = array_map('trim', explode(';', $options->safe_url));   
+
+        foreach ($safeUrls as $safeUrl) {
+            if (!empty($safeUrl) && strpos($currentUrl, $safeUrl) !== false) {
+                foreach ($safeWords as $safeWord) {
+                if (!empty($safeWord) && strpos($comment['text'], $safeWord) !== false) {
+                    return $comment; // 直接发布评论，绕过审核
+                }
+            }
+        }
+    }
+
+        // 如果不符合条件，执行正常审核流程
 
         if ($service == 'baidu') {
             // 使用百度智能云内容审核
