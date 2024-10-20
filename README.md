@@ -1,5 +1,5 @@
 # AlCommentFilter
-**[使用说明](https://blog.catseek.uk/index.php/archives/35/)
+**[使用说明](https://blog.catseek.uk/index.php/archives/35/)**
 
 - **本插件集成了百度智能云和腾讯云的内容安全审核功能，能够有效防止发布敏感、违规或广告评论。**
 - 安装简单，适合新手或小白使用。
