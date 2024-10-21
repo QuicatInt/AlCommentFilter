@@ -6,8 +6,8 @@ use Typecho\Widget\Helper\Form\Element\Text;
  * AICommentFilter
  *
  * @package AICommentFilter
- * @version 1.0.0
- * @author QuicatInt
+ * @version 1.0.1
+ * @author Ursuya
  * @link https://blog.catseek.uk
  */
 class AICommentFilter_Plugin implements Typecho_Plugin_Interface
