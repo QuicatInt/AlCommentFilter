@@ -38,7 +38,7 @@ class AICommentFilter_Plugin implements Typecho_Plugin_Interface
     public static function config(Typecho_Widget_Helper_Form $form)
     {
 
-        $desc = new Text('desc', NULL, '', '插件介绍：', '<p><a href="https://blog.catseek.uk/index.php/archives/35/" target="_blank">插件使用方法</a></p>');
+        $desc = new Text('desc', NULL, '', '插件介绍：', '<p><a href="https://blog.catseek.uk/archives/35.html" target="_blank">插件使用方法</a></p>');
         $form->addInput($desc);
         echo '<script>window.onload = function(){document.getElementsByName("desc")[0].type = "hidden";} </script>'; 
 
