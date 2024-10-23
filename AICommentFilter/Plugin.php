@@ -6,7 +6,7 @@ use Typecho\Widget\Helper\Form\Element\Text;
  * AICommentFilter
  *
  * @package AICommentFilter
- * @version 1.1.0
+ * @version 1.2.0
  * @author Ursuya
  * @link https://blog.catseek.uk
  */
@@ -38,6 +38,16 @@ class AICommentFilter_Plugin implements Typecho_Plugin_Interface
         $desc = new Text('desc', NULL, '', '插件介绍：', '<p><a href="https://blog.catseek.uk/archives/35.html" target="_blank">插件使用方法</a></p>');
         $form->addInput($desc);
         echo '<script>window.onload = function(){document.getElementsByName("desc")[0].type = "hidden";} </script>';
+
+    // 添加“昵称检测”勾选框
+    $checkNickname = new Typecho_Widget_Helper_Form_Element_Checkbox(
+        'check_nickname',
+        array('enable' => _t('启用昵称检测')),
+        array(), // 默认不勾选
+        _t('昵称检测'),
+        _t('勾选此选项来启用对昵称的内容审核。')
+    );
+    $form->addInput($checkNickname);
 
         // 新增“安全词”
         $safeWord = new Typecho_Widget_Helper_Form_Element_Text('safe_word', null, '', _t('安全词'), _t('请输入允许绕过审核的安全词，多个词请用分号 ";" 分隔'));
@@ -128,7 +138,7 @@ class AICommentFilter_Plugin implements Typecho_Plugin_Interface
         });
         });
         </script>
-    EOT;
+EOT;
         echo $script;
     }
 
@@ -140,259 +150,272 @@ class AICommentFilter_Plugin implements Typecho_Plugin_Interface
     /**
      * 评论过滤方法
      */
-    public static function filter($comment, $post)
-    {
-        // 获取插件设置
-        $options = Typecho_Widget::widget('Widget_Options')->plugin('AICommentFilter');
-        $service = $options->service;
+public static function filter($comment, $post)
+{
+    // 获取插件设置
+    $options = Typecho_Widget::widget('Widget_Options')->plugin('AICommentFilter');
+    $service = $options->service;
 
-        // 获取当前请求的 URL
-        $currentUrl = Typecho_Request::getInstance()->getRequestUrl();
+    // 判断是否启用昵称检测
+    $checkNickname = $options->check_nickname ? true : false;
 
-        // 获取用户配置的安全词和地址
-        $safeWords = array_map('trim', explode(';', $options->safe_word));
-        $safeUrls = array_map('trim', explode(';', $options->safe_url));
+    // 获取当前请求的 URL
+    $currentUrl = Typecho_Request::getInstance()->getRequestUrl();
 
-        foreach ($safeUrls as $safeUrl) {
-            if (!empty($safeUrl) && strpos($currentUrl, $safeUrl) !== false) {
-                foreach ($safeWords as $safeWord) {
-                    if (!empty($safeWord) && strpos($comment['text'], $safeWord) !== false) {
-                        return $comment; // 直接发布评论，绕过审核
-                    }
+    // 获取用户配置的安全词和地址
+    $safeWords = array_map('trim', explode(';', $options->safe_word));
+    $safeUrls = array_map('trim', explode(';', $options->safe_url));
+
+    foreach ($safeUrls as $safeUrl) {
+        if (!empty($safeUrl) && strpos($currentUrl, $safeUrl) !== false) {
+            foreach ($safeWords as $safeWord) {
+                if (!empty($safeWord) && strpos($comment['text'], $safeWord) !== false) {
+                    return $comment; // 直接发布评论，绕过审核
                 }
             }
         }
+    }
 
-        // 如果不符合条件，执行正常审核流程
-        if ($service == 'baidu') {
-            // 使用百度智能云内容审核
-            $ak = $options->baidu_ak;
-            $sk = $options->baidu_sk;
+    // 如果启用昵称检测，则将昵称和评论合并为一个字段
+    $content = $checkNickname ? '昵称: ' . $comment['author'] . ' 评论: ' . $comment['text'] : $comment['text'];
 
-            // 如果未设置API Key或Secret Key，跳过审核
-            if (empty($ak) || empty($sk)) {
-                return $comment;
-            }
+    // 百度云内容审核
+    if ($service == 'baidu') {
+        // 使用百度智能云内容审核
+        $ak = $options->baidu_ak;
+        $sk = $options->baidu_sk;
 
-            // 获取Access Token
-            $accessToken = self::getBaiduAccessToken($ak, $sk);
-
-            // 进行评论内容审核
-            $content = $comment['text'];
-            $apiUrl = 'https://aip.baidubce.com/rest/2.0/solution/v1/text_censor/v2/user_defined?access_token=' . $accessToken;
-            $postData = array('text' => $content);
-            $apiResponse = self::httpPost($apiUrl, http_build_query($postData), 'baidu');
-
-            $result = json_decode($apiResponse, true);
-
-            if (!isset($result['conclusionType'])) {
-                throw new Typecho_Plugin_Exception(_t('百度内容审核API调用失败: ' . json_encode($result)));
-            }
-
-            // 判断审核结果
-            if ($result['conclusionType'] != 1) { // 1: 合规
-                throw new Typecho_Widget_Exception(_t('评论内容不合规，包含敏感词或违规信息'));
-            }
-
+        // 如果未设置API Key或Secret Key，跳过审核
+        if (empty($ak) || empty($sk)) {
             return $comment;
-        } elseif ($service == 'tencent') {
-            // 使用腾讯云内容审核
-            $secretId = $options->tencent_secretId;
-            $secretKey = $options->tencent_secretKey;
-            $region = $options->tencent_region;
+        }
 
-            // 如果未设置SecretId或SecretKey，跳过审核
-            if (empty($secretId) || empty($secretKey) || empty($region)) {
-                return $comment;
-            }
+        // 获取Access Token
+        $accessToken = self::getBaiduAccessToken($ak, $sk);
 
-            // 请求参数
-            $action = 'TextModeration';
-            $version = '2020-12-29';
-            $host = 'tms.tencentcloudapi.com';
-            $serviceName = 'tms';
-            $algorithm = 'TC3-HMAC-SHA256';
-            $timestamp = time();
-            $date = gmdate('Y-m-d', $timestamp);
+        // 进行评论内容审核
+        $apiUrl = 'https://aip.baidubce.com/rest/2.0/solution/v1/text_censor/v2/user_defined?access_token=' . $accessToken;
+        $postData = array('text' => $content);
+        $apiResponse = self::httpPost($apiUrl, http_build_query($postData), 'baidu');
 
-            // 腾讯云请求
-            $httpRequestMethod = 'POST';
-            $canonicalUri = '/';
-            $canonicalQueryString = '';
-            $canonicalHeaders = "content-type:application/json; charset=utf-8\nhost:$host\n";
-            $signedHeaders = 'content-type;host';
+        $result = json_decode($apiResponse, true);
 
-            $payload = json_encode(array(
-                'Content' => base64_encode($comment['text']),
-            ), JSON_UNESCAPED_UNICODE);
+        if (!isset($result['conclusionType'])) {
+            throw new Typecho_Plugin_Exception(_t('百度内容审核API调用失败: ' . json_encode($result)));
+        }
 
-            $hashedRequestPayload = hash('SHA256', $payload);
-            $canonicalRequest = "$httpRequestMethod\n$canonicalUri\n$canonicalQueryString\n$canonicalHeaders\n$signedHeaders\n$hashedRequestPayload";
+        // 判断审核结果
+        if ($result['conclusionType'] != 1) { // 1: 合规
+            throw new Typecho_Widget_Exception(_t('内容不合规，包含敏感词或违规信息'));
+        }
 
-            // 腾讯云签名
-            $credentialScope = "$date/$serviceName/tc3_request";
-            $hashedCanonicalRequest = hash('SHA256', $canonicalRequest);
-            $stringToSign = "$algorithm\n$timestamp\n$credentialScope\n$hashedCanonicalRequest";
+        return $comment;
 
-            $secretDate = hash_hmac('SHA256', $date, 'TC3' . $secretKey, true);
-            $secretService = hash_hmac('SHA256', $serviceName, $secretDate, true);
-            $secretSigning = hash_hmac('SHA256', 'tc3_request', $secretService, true);
-            $signature = hash_hmac('SHA256', $stringToSign, $secretSigning);
+    // 腾讯云内容审核
+    } elseif ($service == 'tencent') {
+    // 使用腾讯云内容审核
+    $secretId = $options->tencent_secretId;
+    $secretKey = $options->tencent_secretKey;
+    $region = $options->tencent_region;
 
-            $authorization = "$algorithm Credential=$secretId/$credentialScope, SignedHeaders=$signedHeaders, Signature=$signature";
-
-            // 签名拼接完成
-            $headers = array(
-                'Authorization' => $authorization,
-                'Content-Type' => 'application/json; charset=utf-8',
-                'Host' => $host,
-                'X-TC-Action' => $action,
-                'X-TC-Version' => $version,
-                'X-TC-Timestamp' => strval($timestamp),
-                'X-TC-Region' => $region,
-            );
-
-            $curlHeaders = array();
-            foreach ($headers as $key => $value) {
-                $curlHeaders[] = $key . ': ' . $value;
-            }
-
-            // 请求及响应
-            $apiResponse = self::httpPost('https://' . $host, $payload, 'tencent', $curlHeaders);
-
-            $result = json_decode($apiResponse, true);
-
-            if (isset($result['Response']['Error'])) {
-                $errorCode = $result['Response']['Error']['Code'];
-                $errorMessage = $result['Response']['Error']['Message'];
-                // 错误码列表
-                switch ($errorCode) {
-                    case 'AuthFailure.SignatureExpire':
-                        throw new Typecho_Plugin_Exception(_t('签名过期。请检查服务器时间是否准确，并确保请求的时间戳与服务器时间相差不超过五分钟。'));
-                    case 'AuthFailure.SecretIdNotFound':
-                        throw new Typecho_Plugin_Exception(_t('密钥不存在。请检查您的SecretId是否正确，或者密钥是否被禁用。'));
-                    case 'AuthFailure.SignatureFailure':
-                        throw new Typecho_Plugin_Exception(_t('签名错误。请检查SecretKey是否正确，或签名生成过程是否有误。'));
-                    case 'AuthFailure.TokenFailure':
-                        throw new Typecho_Plugin_Exception(_t('临时证书 Token 错误。请检查您的临时密钥是否正确。'));
-                    case 'AuthFailure.InvalidSecretId':
-                        throw new Typecho_Plugin_Exception(_t('密钥非法。请确保您使用的是有效的云 API 密钥。'));
-                    case 'InternalError.ErrTextTimeOut':
-                        throw new Typecho_Plugin_Exception(_t('请求超时。请稍后重试。'));
-                    case 'InvalidParameter.ErrAction':
-                        throw new Typecho_Plugin_Exception(_t('错误的Action参数。请检查接口调用参数是否正确。'));
-                    case 'InvalidParameter.ErrTextContentLen':
-                        throw new Typecho_Plugin_Exception(_t('请求的文本长度过长。请确保文本长度不超过10000个字符。'));
-                    case 'InvalidParameter.ErrTextContentType':
-                        throw new Typecho_Plugin_Exception(_t('文本类型错误，需要Base64编码的文本。'));
-                    case 'InvalidParameter.ParameterError':
-                        throw new Typecho_Plugin_Exception(_t('参数错误。请检查请求参数是否正确。'));
-                    case 'InvalidParameterValue.ErrFileContent':
-                        throw new Typecho_Plugin_Exception(_t('FileContent不可用，传入的Base64编码无法转换成标准UTF-8内容。'));
-                    case 'InvalidParameterValue.ErrTextContentLen':
-                        throw new Typecho_Plugin_Exception(_t('请求的文本长度超过限制。'));
-                    case 'InvalidParameterValue.ErrTextContentType':
-                        throw new Typecho_Plugin_Exception(_t('请求的文本格式错误，需要Base64编码格式的文本。'));
-                    case 'RequestLimitExceeded':
-                        throw new Typecho_Plugin_Exception(_t('请求次数超过频率限制。请减少请求频率。'));
-                    case 'UnauthorizedOperation.Unauthorized':
-                        throw new Typecho_Plugin_Exception(_t('未开通权限/无有效套餐包/账号已欠费。请检查您的账户状态。'));
-                    default:
-                        throw new Typecho_Plugin_Exception(_t('腾讯云内容审核API调用失败: ' . $errorMessage . ' (错误码: ' . $errorCode . ')'));
-                }
-            }
-
-            if (!isset($result['Response']['Suggestion'])) {
-                throw new Typecho_Plugin_Exception(_t('腾讯云内容审核API调用失败: ' . $apiResponse));
-            }
-
-            // 判断审核结果
-            $suggestion = $result['Response']['Suggestion'];
-            if ($suggestion == 'Block' || $suggestion == 'Review') {
-                $label = isset($result['Response']['Label']) ? $result['Response']['Label'] : 'Unknown';
-                $keywords = isset($result['Response']['Keywords']) ? implode(', ', $result['Response']['Keywords']) : '';
-                $score = isset($result['Response']['Score']) ? $result['Response']['Score'] : 0;
-
-                // 记录详细审核信息到日志
-                error_log("腾讯云审核结果: Label=$label, Suggestion=$suggestion, Keywords=$keywords, Score=$score");
-
-                throw new Typecho_Widget_Exception(_t('评论内容不合规，包含敏感词或违规信息'));
-            }
-
-            return $comment;
-        } elseif ($service == 'aliyun') {
-    // 使用阿里云内容审核
-    $ak = $options->aliyun_ak;
-    $sk = $options->aliyun_sk;
-
-    // 如果未设置AccessKey或SecretKey，跳过审核
-    if (empty($ak) || empty($sk)) {
+    // 如果未设置SecretId或SecretKey，跳过审核
+    if (empty($secretId) || empty($secretKey) || empty($region)) {
         return $comment;
     }
 
-    // 阿里云请求签名和调用API
-    $content = $comment['text'];
-    $apiUrl = 'https://imageaudit.cn-shanghai.aliyuncs.com'; 
+    // 判断是否启用昵称检测
+    $checkNickname = $options->check_nickname ? true : false;
+    // 如果启用昵称检测，则将昵称和评论合并为一个字段
+    $content = $checkNickname ? '昵称: ' . $comment['author'] . ' 评论: ' . $comment['text'] : $comment['text'];
 
-    $timestamp = gmdate("Y-m-d\TH:i:s\Z");
-    $nonce = uniqid();  
+    // 请求参数
+    $action = 'TextModeration';
+    $version = '2020-12-29';
+    $host = 'tms.tencentcloudapi.com';
+    $serviceName = 'tms';
+    $algorithm = 'TC3-HMAC-SHA256';
+    $timestamp = time();
+    $date = gmdate('Y-m-d', $timestamp);
 
-    $requestParams = array(
-        'Action' => 'ScanText',
-        'AccessKeyId' => $ak,
-        'SignatureVersion' => '1.0',
-        'SignatureMethod' => 'HMAC-SHA1',
-        'SignatureNonce' => $nonce,  
-        'Timestamp' => $timestamp,
-        'Format' => 'JSON',  
-        'Version' => '2019-12-30',
-        'Tasks.1.Content' => $content,  
-        'Labels.1.Label' => 'spam',       
-        'Labels.2.Label' => 'politics',    
-        'Labels.3.Label' => 'abuse',       
-        'Labels.4.Label' => 'terrorism',   
-        'Labels.5.Label' => 'porn',        
-        'Labels.6.Label' => 'flood',       
-        'Labels.7.Label' => 'contraband',  
-        'Labels.8.Label' => 'ad'          
+    // 腾讯云请求
+    $httpRequestMethod = 'POST';
+    $canonicalUri = '/';
+    $canonicalQueryString = '';
+    $canonicalHeaders = "content-type:application/json; charset=utf-8\nhost:$host\n";
+    $signedHeaders = 'content-type;host';
+
+    // 将合并后的昵称和评论内容发送进行审核
+    $payload = json_encode(array(
+        'Content' => base64_encode($content), // 将昵称和评论合并后提交审核
+    ), JSON_UNESCAPED_UNICODE);
+
+    $hashedRequestPayload = hash('SHA256', $payload);
+    $canonicalRequest = "$httpRequestMethod\n$canonicalUri\n$canonicalQueryString\n$canonicalHeaders\n$signedHeaders\n$hashedRequestPayload";
+
+    // 腾讯云签名
+    $credentialScope = "$date/$serviceName/tc3_request";
+    $hashedCanonicalRequest = hash('SHA256', $canonicalRequest);
+    $stringToSign = "$algorithm\n$timestamp\n$credentialScope\n$hashedCanonicalRequest";
+
+    $secretDate = hash_hmac('SHA256', $date, 'TC3' . $secretKey, true);
+    $secretService = hash_hmac('SHA256', $serviceName, $secretDate, true);
+    $secretSigning = hash_hmac('SHA256', 'tc3_request', $secretService, true);
+    $signature = hash_hmac('SHA256', $stringToSign, $secretSigning);
+
+    $authorization = "$algorithm Credential=$secretId/$credentialScope, SignedHeaders=$signedHeaders, Signature=$signature";
+
+    // 签名拼接完成
+    $headers = array(
+        'Authorization' => $authorization,
+        'Content-Type' => 'application/json; charset=utf-8',
+        'Host' => $host,
+        'X-TC-Action' => $action,
+        'X-TC-Version' => $version,
+        'X-TC-Timestamp' => strval($timestamp),
+        'X-TC-Region' => $region,
     );
 
-    // 签名
-    ksort($requestParams);
-    $canonicalQueryString = '';
-    foreach ($requestParams as $key => $value) {
-        $canonicalQueryString .= '&' . rawurlencode($key) . '=' . rawurlencode($value);
+    $curlHeaders = array();
+    foreach ($headers as $key => $value) {
+        $curlHeaders[] = $key . ': ' . $value;
     }
-    $canonicalQueryString = substr($canonicalQueryString, 1);  
-    $stringToSign = "POST&%2F&" . rawurlencode($canonicalQueryString);
-    $signature = base64_encode(hash_hmac('sha1', $stringToSign, $sk . '&', true));
-    $requestParams['Signature'] = $signature;
-    $requestUrl = $apiUrl . "/?" . http_build_query($requestParams);
-    $apiResponse = self::httpPost($requestUrl, '', 'aliyun'); 
+
+    // 请求及响应
+    $apiResponse = self::httpPost('https://' . $host, $payload, 'tencent', $curlHeaders);
 
     $result = json_decode($apiResponse, true);
 
-    if (!isset($result['Data']['Elements'][0]['Results'])) {
-        throw new Typecho_Plugin_Exception(_t('阿里云内容审核API调用失败或无结果返回: ' . $apiResponse));
+    // 错误码处理
+    if (isset($result['Response']['Error'])) {
+        $errorCode = $result['Response']['Error']['Code'];
+        $errorMessage = $result['Response']['Error']['Message'];
+
+        // 错误码处理
+        switch ($errorCode) {
+            case 'AuthFailure.SignatureExpire':
+                throw new Typecho_Plugin_Exception(_t('签名过期。请检查服务器时间是否准确，并确保请求的时间戳与服务器时间相差不超过五分钟。'));
+            case 'AuthFailure.SecretIdNotFound':
+                throw new Typecho_Plugin_Exception(_t('密钥不存在。请检查您的SecretId是否正确，或者密钥是否被禁用。'));
+            case 'AuthFailure.SignatureFailure':
+                throw new Typecho_Plugin_Exception(_t('签名错误。请检查SecretKey是否正确，或签名生成过程是否有误。'));
+            case 'AuthFailure.TokenFailure':
+                throw new Typecho_Plugin_Exception(_t('临时证书 Token 错误。请检查您的临时密钥是否正确。'));
+            case 'AuthFailure.InvalidSecretId':
+                throw new Typecho_Plugin_Exception(_t('密钥非法。请确保您使用的是有效的云 API 密钥。'));
+            case 'InternalError.ErrTextTimeOut':
+                throw new Typecho_Plugin_Exception(_t('请求超时。请稍后重试。'));
+            case 'InvalidParameter.ErrAction':
+                throw new Typecho_Plugin_Exception(_t('错误的Action参数。请检查接口调用参数是否正确。'));
+            case 'InvalidParameter.ErrTextContentLen':
+                throw new Typecho_Plugin_Exception(_t('请求的文本长度过长。请确保文本长度不超过10000个字符。'));
+            case 'InvalidParameter.ErrTextContentType':
+                throw new Typecho_Plugin_Exception(_t('文本类型错误，需要Base64编码的文本。'));
+            case 'InvalidParameter.ParameterError':
+                throw new Typecho_Plugin_Exception(_t('参数错误。请检查请求参数是否正确。'));
+            case 'InvalidParameterValue.ErrFileContent':
+                throw new Typecho_Plugin_Exception(_t('FileContent不可用，传入的Base64编码无法转换成标准UTF-8内容。'));
+            case 'InvalidParameterValue.ErrTextContentLen':
+                throw new Typecho_Plugin_Exception(_t('请求的文本长度超过限制。'));
+            case 'InvalidParameterValue.ErrTextContentType':
+                throw new Typecho_Plugin_Exception(_t('请求的文本格式错误，需要Base64编码格式的文本。'));
+            case 'RequestLimitExceeded':
+                throw new Typecho_Plugin_Exception(_t('请求次数超过频率限制。请减少请求频率。'));
+            case 'UnauthorizedOperation.Unauthorized':
+                throw new Typecho_Plugin_Exception(_t('未开通权限/无有效套餐包/账号已欠费。请检查您的账户状态。'));
+            default:
+                throw new Typecho_Plugin_Exception(_t('腾讯云内容审核API调用失败: ' . $errorMessage . ' (错误码: ' . $errorCode . ')'));
+        }
     }
 
-    $results = $result['Data']['Elements'][0]['Results'];
-
-    // 如果 Results 数组为空，说明没有检测结果，可能是任务执行失败或者未匹配到 Labels
-    if (empty($results)) {
-        throw new Typecho_Widget_Exception(_t('评论内容审核结果为空，可能没有匹配到指定的内容或任务未成功执行'));
+    if (!isset($result['Response']['Suggestion'])) {
+        throw new Typecho_Plugin_Exception(_t('腾讯云内容审核API调用失败: ' . $apiResponse));
     }
 
     // 判断审核结果
-    $suggestion = $results[0]['Suggestion'];
-    if ($suggestion == 'pass') {
-        // 审核通过，直接放行评论
-        return $comment;
-    } else {
-        // 审核未通过
-        throw new Typecho_Widget_Exception(_t('评论内容不合规，包含敏感词或违规信息'));
+    $suggestion = $result['Response']['Suggestion'];
+    if ($suggestion == 'Block' || $suggestion == 'Review') {
+        $label = isset($result['Response']['Label']) ? $result['Response']['Label'] : 'Unknown';
+        $keywords = isset($result['Response']['Keywords']) ? implode(', ', $result['Response']['Keywords']) : '';
+        $score = isset($result['Response']['Score']) ? $result['Response']['Score'] : 0;
+
+        // 记录详细审核信息到日志
+        error_log("腾讯云审核结果: Label=$label, Suggestion=$suggestion, Keywords=$keywords, Score=$score");
+
+        throw new Typecho_Widget_Exception(_t('内容不合规，包含敏感词或违规信息'));
     }
-}
+
+    return $comment;
+} elseif ($service == 'aliyun') {
+        // 使用阿里云内容审核
+        $ak = $options->aliyun_ak;
+        $sk = $options->aliyun_sk;
+
+        // 如果未设置AccessKey或SecretKey，跳过审核
+        if (empty($ak) || empty($sk)) {
+            return $comment;
+        }
+
+        // 阿里云请求签名和调用API
+        $apiUrl = 'https://imageaudit.cn-shanghai.aliyuncs.com'; 
+        $timestamp = gmdate("Y-m-d\TH:i:s\Z");
+        $nonce = uniqid();
+
+        $requestParams = array(
+            'Action' => 'ScanText',
+            'AccessKeyId' => $ak,
+            'SignatureVersion' => '1.0',
+            'SignatureMethod' => 'HMAC-SHA1',
+            'SignatureNonce' => $nonce,
+            'Timestamp' => $timestamp,
+            'Format' => 'JSON',
+            'Version' => '2019-12-30',
+            'Tasks.1.Content' => $content,  // 使用合并后的内容（根据是否勾选）
+            'Labels.1.Label' => 'spam',
+            'Labels.2.Label' => 'politics',
+            'Labels.3.Label' => 'abuse',
+            'Labels.4.Label' => 'terrorism',
+            'Labels.5.Label' => 'porn',
+            'Labels.6.Label' => 'flood',
+            'Labels.7.Label' => 'contraband',
+            'Labels.8.Label' => 'ad'
+        );
+
+        // 签名
+        ksort($requestParams);
+        $canonicalQueryString = '';
+        foreach ($requestParams as $key => $value) {
+            $canonicalQueryString .= '&' . rawurlencode($key) . '=' . rawurlencode($value);
+        }
+        $canonicalQueryString = substr($canonicalQueryString, 1);  
+        $stringToSign = "POST&%2F&" . rawurlencode($canonicalQueryString);
+        $signature = base64_encode(hash_hmac('sha1', $stringToSign, $sk . '&', true));
+        $requestParams['Signature'] = $signature;
+        $requestUrl = $apiUrl . "/?" . http_build_query($requestParams);
+        $apiResponse = self::httpPost($requestUrl, '', 'aliyun'); 
+
+        $result = json_decode($apiResponse, true);
+
+        if (!isset($result['Data']['Elements'][0]['Results'])) {
+            throw new Typecho_Plugin_Exception(_t('阿里云内容审核API调用失败或无结果返回: ' . $apiResponse));
+        }
+
+        $results = $result['Data']['Elements'][0]['Results'];
+
+        // 如果 Results 数组为空，说明没有检测结果，可能是任务执行失败或者未匹配到 Labels
+        if (empty($results)) {
+            throw new Typecho_Widget_Exception(_t('内容审核结果为空，可能没有匹配到指定的内容或任务未成功执行'));
+        }
+
+        // 判断审核结果
+        $suggestion = $results[0]['Suggestion'];
+        if ($suggestion == 'pass') {
+            // 审核通过，直接放行评论
+            return $comment;
+        } else {
+            // 审核未通过
+            throw new Typecho_Widget_Exception(_t('内容不合规，包含敏感词或违规信息'));
+        }
+    }
 
 }
 
